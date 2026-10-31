@@ -1,0 +1,1 @@
+"""WindowTint desktop application."""

@@ -1,0 +1,17 @@
+.build-venv/
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+.pytest_cache/
+bin/*
+!bin/WindowTintInjector-0.4.6.dll
+!bin/WindowTintInjector-0.4.7.dll
+!bin/WindowTintInjector-0.4.10.dll
+# Local desktop captures are for QA only and must never be published.
+docs/advanced-preview.png
+docs/packaged-exe.png
+docs/dwm-before.png
+docs/dwm-after.png
+docs/dwm-restored.png
