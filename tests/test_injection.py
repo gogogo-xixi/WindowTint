@@ -71,6 +71,20 @@ class InjectionManagerTests(unittest.TestCase):
         self.assertIn(f'L"WindowTintOverlay_{class_suffix}"', source)
         self.assertIn('L"WindowTintOverlay"', source)
 
+    def test_window_hook_uses_window_bound_state_without_locking_the_global_map(self):
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "native"
+            / "injector"
+            / "WindowTintInjector.cpp"
+        ).read_text(encoding="utf-8")
+        hook = source[source.rindex("LRESULT CALLBACK WindowHookProc(") :]
+        hook = hook[: hook.index("unsigned __stdcall OwnerWatchThread")]
+
+        self.assertIn("GetBinding(hwnd)", hook)
+        self.assertNotIn("FindState(hwnd)", hook)
+        self.assertNotIn("g_state_mutex", hook)
+
     def test_same_process_is_only_loaded_once_for_multiple_windows(self):
         bridge = FakeBridge()
         with tempfile.TemporaryDirectory() as directory:

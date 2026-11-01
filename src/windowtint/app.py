@@ -131,7 +131,8 @@ class WindowTintApp(tk.Tk):
 
         self.opacity_var = tk.DoubleVar(value=42.0)
         self.blur_var = tk.DoubleVar(value=2.0)
-        self.scope_var = tk.StringVar(value="all")
+        self.content_focus_var = tk.BooleanVar(value=True)
+        self.scope_var = tk.StringVar(value="selected")
         self.target_var = tk.StringVar()
         self.corner_var = tk.StringVar(value="round")
         self.resident_var = tk.BooleanVar(value=True)
@@ -458,7 +459,24 @@ class WindowTintApp(tk.Tk):
             font=("Consolas", 8),
         ).grid(row=0, column=2, sticky="e")
 
-        self._separator(content, 7, pady=(8, 0))
+        self.content_focus_check = tk.Checkbutton(
+            content,
+            text="工作区优先：中央内容保持清晰",
+            variable=self.content_focus_var,
+            command=self._settings_changed,
+            background=SURFACE,
+            foreground=INK,
+            activebackground=SURFACE,
+            activeforeground=INK,
+            selectcolor=SOFT_TEAL,
+            anchor="w",
+            padx=0,
+            pady=5,
+            font=("Microsoft YaHei UI", 9),
+        )
+        self.content_focus_check.grid(row=7, column=0, sticky="ew", pady=(2, 0))
+
+        self._separator(content, 8, pady=(8, 0))
 
         tk.Label(
             content,
@@ -466,10 +484,10 @@ class WindowTintApp(tk.Tk):
             background=SURFACE,
             foreground=MUTED,
             font=("Microsoft YaHei UI", 8, "bold"),
-        ).grid(row=8, column=0, sticky="w", pady=(10, 0))
+        ).grid(row=9, column=0, sticky="w", pady=(10, 0))
 
         scope_row = tk.Frame(content, background=SURFACE)
-        scope_row.grid(row=9, column=0, sticky="w", pady=(5, 3))
+        scope_row.grid(row=10, column=0, sticky="w", pady=(5, 3))
         ttk.Radiobutton(
             scope_row,
             text="所有合格窗口",
@@ -488,7 +506,7 @@ class WindowTintApp(tk.Tk):
         ).pack(side="left")
 
         target_row = tk.Frame(content, background=SURFACE)
-        target_row.grid(row=10, column=0, sticky="ew", pady=(1, 0))
+        target_row.grid(row=11, column=0, sticky="ew", pady=(1, 0))
         target_row.grid_columnconfigure(0, weight=1)
         self.target_combo = ttk.Combobox(
             target_row,
@@ -513,7 +531,7 @@ class WindowTintApp(tk.Tk):
         self.refresh_button.grid(row=0, column=1, sticky="ns")
 
         corner_row = tk.Frame(content, background=SURFACE)
-        corner_row.grid(row=11, column=0, sticky="ew", pady=(5, 0))
+        corner_row.grid(row=12, column=0, sticky="ew", pady=(5, 0))
         tk.Label(
             corner_row,
             text="窗口圆角",
@@ -531,7 +549,7 @@ class WindowTintApp(tk.Tk):
         )
         corner_combo.pack(side="right")
 
-        self._separator(content, 12, pady=(9, 0))
+        self._separator(content, 13, pady=(9, 0))
 
         self.resident_check = tk.Checkbutton(
             content,
@@ -548,7 +566,7 @@ class WindowTintApp(tk.Tk):
             pady=6,
             font=("Microsoft YaHei UI", 9),
         )
-        self.resident_check.grid(row=13, column=0, sticky="ew", pady=(2, 0))
+        self.resident_check.grid(row=14, column=0, sticky="ew", pady=(2, 0))
 
         self.status_label = tk.Label(
             content,
@@ -560,10 +578,10 @@ class WindowTintApp(tk.Tk):
             wraplength=390,
             font=("Microsoft YaHei UI", 8),
         )
-        self.status_label.grid(row=14, column=0, sticky="ew", pady=(7, 6))
+        self.status_label.grid(row=15, column=0, sticky="ew", pady=(7, 6))
 
         actions = tk.Frame(content, background=SURFACE)
-        actions.grid(row=15, column=0, sticky="ew")
+        actions.grid(row=16, column=0, sticky="ew")
         actions.grid_columnconfigure(0, weight=1)
         actions.grid_columnconfigure(1, weight=1)
         self.apply_button = _button(actions, "应用到窗口", self.apply_theme, primary=True)
@@ -580,7 +598,7 @@ class WindowTintApp(tk.Tk):
             justify="left",
             wraplength=390,
             font=("Microsoft YaHei UI", 7),
-        ).grid(row=16, column=0, sticky="ew", pady=(7, 0))
+        ).grid(row=17, column=0, sticky="ew", pady=(7, 0))
 
     def _build_advanced_page(self, parent: tk.Misc) -> None:
         parent.grid_columnconfigure(0, weight=7, uniform="advanced")
@@ -1002,6 +1020,7 @@ class WindowTintApp(tk.Tk):
                 source,
                 opacity=float(self.opacity_var.get()) / 100,
                 blur_radius=round(float(self.blur_var.get())),
+                content_focus=self.content_focus_var.get(),
             )
             window.alpha_composite(glass)
 
@@ -1299,6 +1318,7 @@ class WindowTintApp(tk.Tk):
             self._practical_image(),
             opacity=float(self.opacity_var.get()) / 100,
             blur_radius=round(float(self.blur_var.get())),
+            content_focus=self.content_focus_var.get(),
         )
         return self.backdrop_store.write(backdrop)
 

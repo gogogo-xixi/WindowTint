@@ -72,7 +72,7 @@ def main() -> None:
         release_dll = (
             ROOT
             / "dist"
-            / "WindowTint-0.4.10-win64"
+            / "WindowTint-0.4.11-win64"
             / INJECTOR_RELEASE_NAME
         )
         if not release_dll.exists():

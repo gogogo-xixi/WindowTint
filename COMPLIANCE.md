@@ -1,4 +1,4 @@
-# WindowTint 0.4.10 合规与安全边界
+# WindowTint 0.4.11 合规与安全边界
 
 ## 当前背景模式会做什么
 
@@ -93,7 +93,7 @@
 
 ## 发布要求
 
-- 发布包必须同时包含 `WindowTint.exe` 和 `WindowTintInjector-0.4.10.dll`。
+- 发布包必须同时包含 `WindowTint.exe` 和 `WindowTintInjector-0.4.11.dll`。
 - DLL 必须与 EXE 放在同一目录，不能伪装成单文件绿色版。
 - EXE 和 DLL 应签名，并发布 SHA-256、源码、许可证、隐私说明和已知限制。
 - 不使用 WindowBlinds、Stardock 或 Microsoft 的名称、图标、皮肤资源暗示官方关联。

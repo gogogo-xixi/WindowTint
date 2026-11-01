@@ -10,6 +10,7 @@
 #include <cwchar>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -30,7 +31,8 @@ constexpr UINT kOverlayTimerInterval = 100;
 constexpr UINT_PTR kResizeSettleTimerId = 0x57545253;
 constexpr UINT kResizeSettleDelay = 120;
 constexpr wchar_t kOverlayClassPrefix[] = L"WindowTintOverlay";
-constexpr wchar_t kOverlayClassName[] = L"WindowTintOverlay_0_4_10";
+constexpr wchar_t kOverlayClassName[] = L"WindowTintOverlay_0_4_11";
+constexpr wchar_t kStatePropertyName[] = L"WindowTintState_0_4_11";
 constexpr DWORD kDwmExtendedFrameBounds = 9;
 
 LRESULT CALLBACK OverlayWindowProc(
@@ -59,6 +61,11 @@ struct OverlayState {
     int y = 0;
     int width = 0;
     int height = 0;
+};
+
+struct HookBinding {
+    std::shared_ptr<OverlayState> state;
+    bool destroying = false;
 };
 
 bool ShowOverlay(
@@ -142,6 +149,45 @@ std::shared_ptr<OverlayState> FindState(HWND hwnd) {
     std::lock_guard<std::mutex> lock(g_state_mutex);
     const auto found = g_states.find(hwnd);
     return found == g_states.end() ? nullptr : found->second;
+}
+
+HookBinding* GetBinding(HWND hwnd) {
+    return reinterpret_cast<HookBinding*>(
+        GetPropW(hwnd, kStatePropertyName));
+}
+
+bool AttachBinding(
+    HWND hwnd,
+    const std::shared_ptr<OverlayState>& state) {
+    auto* binding = new (std::nothrow) HookBinding;
+    if (!binding) {
+        return false;
+    }
+    binding->state = state;
+    if (!SetPropW(hwnd, kStatePropertyName, binding)) {
+        delete binding;
+        return false;
+    }
+    return true;
+}
+
+void DetachBinding(HWND hwnd) {
+    auto* binding = GetBinding(hwnd);
+    if (!binding) {
+        return;
+    }
+    RemovePropW(hwnd, kStatePropertyName);
+    delete binding;
+}
+
+void RetireState(
+    HWND hwnd,
+    const std::shared_ptr<OverlayState>& state) {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    const auto found = g_states.find(hwnd);
+    if (found != g_states.end() && found->second == state) {
+        g_states.erase(found);
+    }
 }
 
 bool EnsureOverlayClass() {
@@ -519,24 +565,25 @@ bool ShowOverlay(HWND target, const std::shared_ptr<OverlayState>& state, bool f
     return true;
 }
 
-bool RemoveOverlayOnUiThread(HWND target) {
-    std::shared_ptr<OverlayState> state;
-    {
-        std::lock_guard<std::mutex> lock(g_state_mutex);
-        const auto found = g_states.find(target);
-        if (found != g_states.end()) {
-            state = found->second;
-            g_states.erase(found);
-        }
+bool RemoveOverlayOnUiThread(
+    HWND target,
+    const std::shared_ptr<OverlayState>& state) {
+    if (!state) {
+        return false;
     }
+    auto* binding = GetBinding(target);
+    if (binding) {
+        binding->destroying = true;
+    }
+    RetireState(target, state);
     KillTimer(target, kOverlayTimerId);
     KillTimer(target, kResizeSettleTimerId);
-    if (state && state->overlay && IsWindow(state->overlay)) {
+    if (state->overlay && IsWindow(state->overlay)) {
         DestroyWindow(state->overlay);
         state->overlay = nullptr;
     }
     DestroyStrayOverlays(target, nullptr);
-    if (state && state->original_proc && IsWindow(target)) {
+    if (state->original_proc && IsWindow(target)) {
         SetWindowLongPtrW(
             target,
             GWLP_WNDPROC,
@@ -546,6 +593,7 @@ bool RemoveOverlayOnUiThread(HWND target) {
     if (IsWindow(target)) {
         InvalidateRect(target, nullptr, FALSE);
     }
+    DetachBinding(target);
     return true;
 }
 
@@ -582,17 +630,23 @@ LRESULT CALLBACK WindowHookProc(
     UINT message,
     WPARAM w_param,
     LPARAM l_param) {
-    const auto state = FindState(hwnd);
-    if (!state) {
+    auto* binding = GetBinding(hwnd);
+    if (!binding || !binding->state) {
         return DefWindowProcW(hwnd, message, w_param, l_param);
     }
+    const auto state = binding->state;
     const WNDPROC original_proc = state->original_proc;
+    if (!original_proc || binding->destroying) {
+        return original_proc
+            ? CallWindowProcW(original_proc, hwnd, message, w_param, l_param)
+            : DefWindowProcW(hwnd, message, w_param, l_param);
+    }
 
     switch (message) {
         case kApplyOverlayMessage:
             return ShowOverlay(hwnd, state, true) ? TRUE : FALSE;
         case kRemoveMessage:
-            return RemoveOverlayOnUiThread(hwnd) ? TRUE : FALSE;
+            return RemoveOverlayOnUiThread(hwnd, state) ? TRUE : FALSE;
         case WM_DPICHANGED: {
             const LRESULT result =
                 CallWindowProcW(original_proc, hwnd, message, w_param, l_param);
@@ -675,18 +729,18 @@ LRESULT CALLBACK WindowHookProc(
             }
             break;
         case WM_NCDESTROY: {
+            binding->destroying = true;
             KillTimer(hwnd, kOverlayTimerId);
             KillTimer(hwnd, kResizeSettleTimerId);
-            {
-                std::lock_guard<std::mutex> lock(g_state_mutex);
-                g_states.erase(hwnd);
-            }
-            return CallWindowProcW(
+            RetireState(hwnd, state);
+            const LRESULT result = CallWindowProcW(
                 original_proc,
                 hwnd,
                 message,
                 w_param,
                 l_param);
+            DetachBinding(hwnd);
+            return result;
         }
         default:
             break;
@@ -824,19 +878,33 @@ extern "C" __declspec(dllexport) BOOL WINAPI Apply(HWND hwnd, LPCWSTR path) {
             }
         }
 
-        SetLastError(ERROR_SUCCESS);
         const WNDPROC original_proc = reinterpret_cast<WNDPROC>(
-            SetWindowLongPtrW(
-                hwnd,
-                GWLP_WNDPROC,
-                reinterpret_cast<LONG_PTR>(WindowHookProc)));
+            GetWindowLongPtrW(hwnd, GWLP_WNDPROC));
         if (!original_proc) {
             return FALSE;
         }
         state->original_proc = original_proc;
+        if (!AttachBinding(hwnd, state)) {
+            state->original_proc = nullptr;
+            return FALSE;
+        }
+        SetLastError(ERROR_SUCCESS);
+        const WNDPROC replaced_proc = reinterpret_cast<WNDPROC>(
+            SetWindowLongPtrW(
+                hwnd,
+                GWLP_WNDPROC,
+                reinterpret_cast<LONG_PTR>(WindowHookProc)));
+        if (!replaced_proc) {
+            DetachBinding(hwnd);
+            state->original_proc = nullptr;
+            return FALSE;
+        }
+        state->original_proc = replaced_proc;
         MarkStage(2);
-        std::lock_guard<std::mutex> lock(g_state_mutex);
-        g_states.emplace(hwnd, state);
+        {
+            std::lock_guard<std::mutex> lock(g_state_mutex);
+            g_states.emplace(hwnd, state);
+        }
     }
     const BOOL posted =
         PostMessage(hwnd, kApplyOverlayMessage, 0, 0) ? TRUE : FALSE;

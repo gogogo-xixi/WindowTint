@@ -21,6 +21,8 @@ $objectDir = Join-Path $root "build\injector"
 $output = Join-Path $outputDir $OutputName
 $objectName = [IO.Path]::GetFileNameWithoutExtension($OutputName) + ".obj"
 $object = Join-Path $objectDir $objectName
+$mapName = [IO.Path]::GetFileNameWithoutExtension($OutputName) + ".map"
+$map = Join-Path $outputDir $mapName
 
 $vcvarsCandidates = @(
     $env:WINDOWTINT_VCVARS64,
@@ -46,7 +48,7 @@ $compile = @(
     "call `"$vcvars`" >nul &&",
     "cl.exe /nologo /std:c++17 /EHsc /O2 /MT /DUNICODE /D_UNICODE",
     "/LD `"$source`" /Fo:`"$object`" /Fe:`"$output`"",
-    "/link /DEF:`"$definition`" user32.lib gdi32.lib gdiplus.lib dwmapi.lib &&",
+    "/link /DEF:`"$definition`" /MAP:`"$map`" user32.lib gdi32.lib gdiplus.lib dwmapi.lib &&",
     "mt.exe -nologo -manifest `"$manifest`" `"-outputresource:$output;#2`""
 ) -join " "
 
@@ -57,4 +59,5 @@ if ($LASTEXITCODE -ne 0) {
 
 $hash = Get-FileHash -Algorithm SHA256 $output
 "Built: $output"
+"Map: $map"
 "SHA256: $($hash.Hash)"

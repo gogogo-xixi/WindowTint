@@ -2,8 +2,8 @@ $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $venv = Join-Path $root ".build-venv"
 $python = Join-Path $venv "Scripts\python.exe"
-$version = "0.4.10"
-$releaseInjectorName = "WindowTintInjector-0.4.10.dll"
+$version = "0.4.11"
+$releaseInjectorName = "WindowTintInjector-0.4.11.dll"
 $stagingDir = Join-Path $root "build\release-injector"
 $releaseInjector = Join-Path $stagingDir $releaseInjectorName
 
@@ -61,7 +61,7 @@ try {
     $checksumFile = Join-Path $releaseDir "SHA256SUMS.txt"
     Set-Content -LiteralPath $checksumFile -Encoding ascii -Value @(
         "$($exeHash.Hash)  WindowTint.exe",
-        "$((Get-FileHash -Algorithm SHA256 $releaseInjector).Hash)  WindowTintInjector-0.4.10.dll"
+        "$((Get-FileHash -Algorithm SHA256 $releaseInjector).Hash)  WindowTintInjector-0.4.11.dll"
     )
     $zip = Join-Path $root "dist\WindowTint-$version-win64.zip"
     Compress-Archive -Path (Join-Path $releaseDir "*") -DestinationPath $zip -Force

@@ -25,6 +25,8 @@ def sample_image() -> Image.Image:
 
 def main() -> None:
     app = WindowTintApp()
+    if app.scope_var.get() != "selected":
+        raise RuntimeError("WindowTint must open in current-window mode by default")
     app.geometry("1120x760+20+20")
     app.attributes("-topmost", True)
     app.resident_var.set(False)

@@ -30,7 +30,7 @@ TH32CS_SNAPMODULE = 0x00000008
 TH32CS_SNAPMODULE32 = 0x00000010
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 MAX_LONG_PATH = 32768
-INJECTOR_RELEASE_NAME = "WindowTintInjector-0.4.10.dll"
+INJECTOR_RELEASE_NAME = "WindowTintInjector-0.4.11.dll"
 
 
 class InjectionError(RuntimeError):

@@ -207,7 +207,12 @@ def make_backdrop() -> Path:
                 (25 + x // 9, 80 + y // 6, 120 + (x + y) // 12),
             )
     palette = extract_palette(source)
-    backdrop = build_glass_backdrop(source, opacity=0.32, blur_radius=16)
+    backdrop = build_glass_backdrop(
+        source,
+        opacity=0.48,
+        blur_radius=16,
+        content_focus=True,
+    )
     if palette.dominant == (0, 0, 0):
         raise RuntimeError("test backdrop palette was not generated")
     return BackdropStore(ROOT / "build" / "overlay-smoke").write(backdrop)
@@ -298,7 +303,7 @@ def main() -> None:
                     raise RuntimeError(
                         f"backdrop did not visibly cover the target: {changed} pixels"
                     )
-                if contrast < 20:
+                if contrast < 24:
                     raise RuntimeError(
                         f"native content is not readable through the overlay: {contrast}"
                     )

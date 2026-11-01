@@ -1,4 +1,4 @@
-# WindowTint / 窗色 0.4.10
+# WindowTint / 窗色 0.4.11
 
 用一张本地图片，给 Windows 11 普通桌面窗口加入一层柔和、稳定的进程内玻璃背景。
 
@@ -11,9 +11,9 @@
 ## 下载
 
 从 [GitHub Releases](https://github.com/gogogo-xixi/WindowTint/releases/latest) 下载
-`WindowTint-0.4.10-win64.zip`，解压后直接运行 `WindowTint.exe`。
+`WindowTint-0.4.11-win64.zip`，解压后直接运行 `WindowTint.exe`。
 
-发布包必须同时保留 `WindowTint.exe` 和 `WindowTintInjector-0.4.10.dll`。首次启动时
+发布包必须同时保留 `WindowTint.exe` 和 `WindowTintInjector-0.4.11.dll`。首次启动时
 Windows SmartScreen 或安全软件可能提示未知发布者，这是未签名注入工具的正常风险提示。
 
 ## 当前能力
@@ -79,9 +79,9 @@ python .\tests\injection_smoke.py
 
 输出：
 
-- `dist\WindowTint-0.4.10-win64.zip`
+- `dist\WindowTint-0.4.11-win64.zip`
 
-发布目录内会同时包含 `WindowTintInjector-0.4.10.dll`，它必须与 `WindowTint.exe` 放在同一目录。
+发布目录内会同时包含 `WindowTintInjector-0.4.11.dll`，它必须与 `WindowTint.exe` 放在同一目录。
 发布包不能只包含单个 EXE。已打开的目标程序会一直锁定载入的 DLL，直到该程序退出。
 
 ## 数据流
