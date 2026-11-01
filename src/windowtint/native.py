@@ -7,7 +7,11 @@ import sys
 from dataclasses import dataclass
 from ctypes import wintypes
 
-from .safety import is_explorer_file_window, target_rejection_reason
+from .safety import (
+    is_explorer_file_window,
+    supports_painted_backdrop,
+    target_rejection_reason,
+)
 from .theme import ThemePalette
 
 
@@ -17,11 +21,19 @@ DWMWA_BORDER_COLOR = 34
 DWMWA_CAPTION_COLOR = 35
 DWMWA_TEXT_COLOR = 36
 DWMWA_CLOAKED = 14
+DWMWA_EXTENDED_FRAME_BOUNDS = 9
+DWMWA_SYSTEMBACKDROP_TYPE = 38
 
 DWMWA_COLOR_DEFAULT = 0xFFFFFFFF
 DWMWCP_DEFAULT = 0
 DWMWCP_DONOTROUND = 1
 DWMWCP_ROUND = 2
+
+DWMSBT_AUTO = 0
+DWMSBT_NONE = 1
+DWMSBT_MAINWINDOW = 2
+DWMSBT_TRANSIENTWINDOW = 3
+DWMSBT_TABBEDWINDOW = 4
 
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_NOACTIVATE = 0x08000000
@@ -35,6 +47,7 @@ TH32CS_SNAPMODULE32 = 0x00000010
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
 _saved_corners: dict[int, int] = {}
+_saved_backdrops: dict[int, int] = {}
 
 
 @dataclass(frozen=True)
@@ -50,7 +63,12 @@ class WindowInfo:
 
     @property
     def label(self) -> str:
-        renderer = "  ·  外部层" if self.renderer == "external" else ""
+        if self.renderer == "external":
+            renderer = "  ·  外部层"
+        elif self.renderer == "painted":
+            renderer = "  ·  绘制层"
+        else:
+            renderer = ""
         return f"{self.title}  ·  {self.process_name}{renderer}"
 
 
@@ -94,6 +112,21 @@ def _user32():
     user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
     user32.GetForegroundWindow.argtypes = ()
     user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowRect.argtypes = (
+        wintypes.HWND,
+        ctypes.POINTER(wintypes.RECT),
+    )
+    user32.GetWindowRect.restype = wintypes.BOOL
+    user32.GetClientRect.argtypes = (
+        wintypes.HWND,
+        ctypes.POINTER(wintypes.RECT),
+    )
+    user32.GetClientRect.restype = wintypes.BOOL
+    user32.ClientToScreen.argtypes = (
+        wintypes.HWND,
+        ctypes.POINTER(wintypes.POINT),
+    )
+    user32.ClientToScreen.restype = wintypes.BOOL
     return user32
 
 
@@ -352,6 +385,7 @@ class _WindowEnum:
                     )
                 )
             return True
+        class_name = _window_class_name(hwnd)
         rejection = target_rejection_reason(
             process_name=inspection.process_name,
             style=style,
@@ -370,6 +404,14 @@ class _WindowEnum:
                     thread_id=thread_id,
                     style=style,
                     is_64_bit=inspection.is_64_bit,
+                    renderer=(
+                        "painted"
+                        if supports_painted_backdrop(
+                            inspection.process_name,
+                            class_name,
+                        )
+                        else "injected"
+                    ),
                 )
             )
         return True
@@ -381,6 +423,54 @@ def list_windows(exclude_pid: int | None = None) -> list[WindowInfo]:
 
 def foreground_window() -> int:
     return int(_user32().GetForegroundWindow())
+
+
+def window_frame_size(hwnd: int) -> tuple[int, int]:
+    left, top, right, bottom = window_frame_rect(hwnd)
+    return right - left, bottom - top
+
+
+def window_frame_rect(hwnd: int) -> tuple[int, int, int, int]:
+    user32 = _user32()
+    if not user32.IsWindow(hwnd):
+        raise RuntimeError("The selected window is no longer available.")
+    rect = wintypes.RECT()
+    result = _dwmapi().DwmGetWindowAttribute(
+        hwnd,
+        DWMWA_EXTENDED_FRAME_BOUNDS,
+        ctypes.byref(rect),
+        ctypes.sizeof(rect),
+    )
+    if result < 0 and not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        raise OSError(ctypes.get_last_error(), "Could not read window bounds.")
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    if width <= 0 or height <= 0:
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            raise RuntimeError("The selected window has invalid bounds.")
+        width = rect.right - rect.left
+        height = rect.bottom - rect.top
+        if width <= 0 or height <= 0:
+            raise RuntimeError("The selected window has invalid bounds.")
+    return rect.left, rect.top, rect.right, rect.bottom
+
+
+def window_client_rect(hwnd: int) -> tuple[int, int, int, int]:
+    """Return the client area in coordinates relative to the frame's top-left."""
+    left, top, _right, _bottom = window_frame_rect(hwnd)
+    user32 = _user32()
+    client = wintypes.RECT()
+    if not user32.GetClientRect(hwnd, ctypes.byref(client)):
+        raise OSError(ctypes.get_last_error(), "Could not read the client area.")
+    origin = wintypes.POINT(0, 0)
+    if not user32.ClientToScreen(hwnd, ctypes.byref(origin)):
+        raise OSError(ctypes.get_last_error(), "Could not map the client area.")
+    return (
+        origin.x - left,
+        origin.y - top,
+        origin.x + client.right - left,
+        origin.y + client.bottom - top,
+    )
 
 
 def _set_attribute(hwnd: int, attribute: int, value: int) -> None:
@@ -426,6 +516,39 @@ def apply_window_theme(hwnd: int, _palette: ThemePalette, corner: str = "round")
     except OSError:
         restore_window_theme(hwnd)
         raise
+
+
+def apply_system_material(hwnd: int) -> None:
+    if not _user32().IsWindow(hwnd):
+        raise RuntimeError("The selected window is no longer available.")
+    if hwnd not in _saved_backdrops:
+        original = _get_attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE)
+        _saved_backdrops[hwnd] = (
+            DWMSBT_AUTO if original is None else original
+        )
+    try:
+        _set_attribute(
+            hwnd,
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            DWMSBT_MAINWINDOW,
+        )
+    except OSError:
+        _saved_backdrops.pop(hwnd, None)
+        raise
+
+
+def restore_system_material(hwnd: int) -> None:
+    original = _saved_backdrops.pop(hwnd, DWMSBT_AUTO)
+    if not _user32().IsWindow(hwnd):
+        return
+    try:
+        _set_attribute(
+            hwnd,
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            original,
+        )
+    except OSError:
+        pass
 
 
 def restore_window_theme(hwnd: int) -> None:

@@ -57,6 +57,12 @@ EXPLORER_FILE_WINDOW_CLASSES = {
     "ExploreWClass",
 }
 
+PAINTED_WINDOW_CLASSES = {
+    "#32770",
+    "Notepad",
+    "WordPadClass",
+}
+
 
 def is_antcheat_module(name: str) -> bool:
     normalized = name.casefold()
@@ -76,6 +82,15 @@ def is_explorer_file_window(process_name: str, class_name: str) -> bool:
     return (
         process_name.casefold() == "explorer.exe"
         and class_name in EXPLORER_FILE_WINDOW_CLASSES
+    )
+
+
+def supports_painted_backdrop(process_name: str, class_name: str) -> bool:
+    normalized_name = process_name.casefold()
+    return (
+        class_name in PAINTED_WINDOW_CLASSES
+        or normalized_name == "notepad.exe"
+        or normalized_name == "wordpad.exe"
     )
 
 

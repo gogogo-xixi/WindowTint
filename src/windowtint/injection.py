@@ -30,7 +30,7 @@ TH32CS_SNAPMODULE = 0x00000008
 TH32CS_SNAPMODULE32 = 0x00000010
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 MAX_LONG_PATH = 32768
-INJECTOR_RELEASE_NAME = "WindowTintInjector-0.4.11.dll"
+INJECTOR_RELEASE_NAME = "WindowTintInjector-0.4.15.dll"
 
 
 class InjectionError(RuntimeError):
@@ -151,7 +151,24 @@ class RemoteProcessBridge:
 
     def ensure_module(self, pid: int, dll_path: Path) -> int:
         self._local_dll_path = Path(dll_path)
-        existing = self._find_remote_module(pid, dll_path)
+        expected_path = os.path.normcase(os.path.abspath(dll_path))
+        expected_name = ntpath.basename(str(dll_path)).casefold()
+        existing = None
+        for module_name, module_path, module_base in self._remote_module_entries(pid):
+            if not self._is_injector_module(module_name, module_path):
+                continue
+            same_path = (
+                bool(module_path)
+                and os.path.normcase(os.path.abspath(module_path)) == expected_path
+            )
+            if module_name.casefold() == expected_name or same_path:
+                existing = module_base
+                continue
+            raise InjectionError(
+                f"目标进程已加载不同版本的 {module_name}。"
+                "请完全退出并重启目标程序后再试；"
+                "不能在同一进程中叠加多个 WindowTint 注入器。"
+            )
         if existing is not None:
             return existing
 
@@ -176,6 +193,20 @@ class RemoteProcessBridge:
         backdrop_path: Path,
     ) -> int:
         address = self._remote_export(module_base, b"ApplyRemote")
+        request = _ApplyRequest()
+        request.hwnd = hwnd
+        request.path = str(backdrop_path)
+        request.owner_pid = os.getpid()
+        return self._call_remote(pid, address, bytes(request))
+
+    def call_apply_painted(
+        self,
+        pid: int,
+        module_base: int,
+        hwnd: int,
+        backdrop_path: Path,
+    ) -> int:
+        address = self._remote_export(module_base, b"ApplyPaintedRemote")
         request = _ApplyRequest()
         request.hwnd = hwnd
         request.path = str(backdrop_path)
@@ -220,28 +251,49 @@ class RemoteProcessBridge:
         return module_base + self._local_export_offset(export_name)
 
     def _find_remote_module(self, pid: int, dll_path: Path) -> int | None:
+        expected = os.path.normcase(os.path.abspath(dll_path))
+        expected_name = ntpath.basename(str(dll_path)).casefold()
+        for module_name, module_path, module_base in self._remote_module_entries(pid):
+            same_path = (
+                bool(module_path)
+                and os.path.normcase(os.path.abspath(module_path)) == expected
+            )
+            if module_name.casefold() == expected_name or same_path:
+                return module_base
+        return None
+
+    def _remote_module_entries(self, pid: int) -> list[tuple[str, str, int]]:
         kernel32 = _kernel32()
         snapshot = kernel32.CreateToolhelp32Snapshot(
             TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32,
             pid,
         )
         if not snapshot or snapshot == INVALID_HANDLE_VALUE:
-            return None
-        expected = os.path.normcase(os.path.abspath(dll_path))
-        expected_name = ntpath.basename(str(dll_path)).casefold()
+            return []
+        modules = []
         try:
             entry = _ModuleEntry32W()
             entry.dwSize = ctypes.sizeof(entry)
             if not kernel32.Module32FirstW(snapshot, ctypes.byref(entry)):
-                return None
+                return []
             while True:
-                module_path = os.path.normcase(os.path.abspath(entry.szExePath))
-                if module_path == expected or entry.szModule.casefold() == expected_name:
-                    return int(entry.modBaseAddr or 0)
+                modules.append(
+                    (
+                        entry.szModule,
+                        entry.szExePath,
+                        int(entry.modBaseAddr or 0),
+                    )
+                )
                 if not kernel32.Module32NextW(snapshot, ctypes.byref(entry)):
-                    return None
+                    return modules
         finally:
             kernel32.CloseHandle(snapshot)
+
+    @staticmethod
+    def _is_injector_module(module_name: str, module_path: str) -> bool:
+        name = module_name or ntpath.basename(module_path)
+        folded = name.casefold()
+        return folded.startswith("windowtintinjector") and folded.endswith(".dll")
 
     def _call_remote(
         self,
@@ -354,6 +406,25 @@ class InjectionManager:
         )
         if result == 0:
             raise InjectionError("目标进程拒绝应用背景层")
+        self._targets[target.hwnd] = target.pid
+
+    def apply_painted(self, target: WindowTarget, backdrop_path: Path) -> None:
+        if not self.dll_path.exists():
+            raise InjectionError(f"injector DLL 不存在：{self.dll_path}")
+        if not Path(backdrop_path).exists():
+            raise InjectionError(f"背景图片不存在：{backdrop_path}")
+        module_base = self._modules.get(target.pid)
+        if module_base is None:
+            module_base = self._bridge.ensure_module(target.pid, self.dll_path)
+            self._modules[target.pid] = module_base
+        result = self._bridge.call_apply_painted(
+            target.pid,
+            module_base,
+            target.hwnd,
+            Path(backdrop_path),
+        )
+        if result == 0:
+            raise InjectionError("目标进程拒绝应用绘制背景")
         self._targets[target.hwnd] = target.pid
 
     def remove(self, target: WindowTarget) -> None:

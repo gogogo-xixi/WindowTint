@@ -1,9 +1,19 @@
+param(
+    [string]$Variant = ""
+)
+
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $venv = Join-Path $root ".build-venv"
 $python = Join-Path $venv "Scripts\python.exe"
-$version = "0.4.11"
-$releaseInjectorName = "WindowTintInjector-0.4.11.dll"
+$version = "0.4.15"
+$releaseInjectorName = "WindowTintInjector-0.4.15.dll"
+if ($Variant -and $Variant -notmatch "^[A-Za-z0-9._-]+$") {
+    throw "Variant may only contain letters, numbers, dots, underscores, and hyphens."
+}
+$releaseLabel = if ($Variant) { "$version-$Variant" } else { $version }
+$releaseDirName = "WindowTint-$releaseLabel-win64"
+$releaseZipName = "$releaseDirName.zip"
 $stagingDir = Join-Path $root "build\release-injector"
 $releaseInjector = Join-Path $stagingDir $releaseInjectorName
 
@@ -41,7 +51,8 @@ try {
     }
     $exe = Join-Path $root "dist\WindowTint.exe"
     $exeHash = Get-FileHash -Algorithm SHA256 $exe
-    $releaseDir = Join-Path $root "dist\WindowTint-$version-win64"
+    $distDir = Join-Path $root "dist"
+    $releaseDir = Join-Path $distDir $releaseDirName
     New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
     Copy-Item -LiteralPath $exe -Destination $releaseDir -Force
     Copy-Item -LiteralPath $releaseInjector -Destination $releaseDir -Force
@@ -61,11 +72,33 @@ try {
     $checksumFile = Join-Path $releaseDir "SHA256SUMS.txt"
     Set-Content -LiteralPath $checksumFile -Encoding ascii -Value @(
         "$($exeHash.Hash)  WindowTint.exe",
-        "$((Get-FileHash -Algorithm SHA256 $releaseInjector).Hash)  WindowTintInjector-0.4.11.dll"
+        "$((Get-FileHash -Algorithm SHA256 $releaseInjector).Hash)  WindowTintInjector-0.4.15.dll"
     )
-    $zip = Join-Path $root "dist\WindowTint-$version-win64.zip"
+    $zip = Join-Path $distDir $releaseZipName
     Compress-Archive -Path (Join-Path $releaseDir "*") -DestinationPath $zip -Force
     Remove-Item -LiteralPath $exe -Force
+    Get-ChildItem -LiteralPath $distDir -Force |
+        Where-Object {
+            $_.Name -like "WindowTint-*" -and
+            $_.Name -ne $releaseDirName -and
+            $_.Name -ne $releaseZipName
+        } |
+        ForEach-Object {
+            $candidate = [IO.Path]::GetFullPath($_.FullName)
+            $distPrefix = [IO.Path]::GetFullPath($distDir) + [IO.Path]::DirectorySeparatorChar
+            if (-not $candidate.StartsWith($distPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Refusing to clean a path outside dist: $candidate"
+            }
+            try {
+                if ($_.PSIsContainer) {
+                    [IO.Directory]::Delete($candidate, $true)
+                } else {
+                    [IO.File]::Delete($candidate)
+                }
+            } catch {
+                Write-Warning "Could not remove old build because it is in use: $candidate"
+            }
+        }
     "Built: $exe"
     "EXE SHA256: $($exeHash.Hash)"
     "Release: $zip"

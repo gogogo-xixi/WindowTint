@@ -4,6 +4,7 @@ dist/
 *.spec
 __pycache__/
 *.pyc
+*.obj
 .pytest_cache/
 bin/*
 !bin/WindowTintInjector-0.4.6.dll
@@ -15,3 +16,11 @@ docs/packaged-exe.png
 docs/dwm-before.png
 docs/dwm-after.png
 docs/dwm-restored.png
+
+# Local reverse-engineering experiments; never part of a release.
+native/loader/
+native/probe/
+src/windowtint/webview2.py
+tests/material_smoke.py
+tools/appinit_probe_experiment.ps1
+tools/ifeo_*.ps1

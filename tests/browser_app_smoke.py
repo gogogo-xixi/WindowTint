@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import sys
 import time
 from ctypes import wintypes
@@ -69,12 +70,7 @@ def main() -> None:
 
     app = WindowTintApp()
     try:
-        release_dll = (
-            ROOT
-            / "dist"
-            / "WindowTint-0.4.11-win64"
-            / INJECTOR_RELEASE_NAME
-        )
+        release_dll = ROOT / "build" / "release-injector" / INJECTOR_RELEASE_NAME
         if not release_dll.exists():
             raise RuntimeError(f"release injector is missing: {release_dll}")
         app.injection = InjectionManager(release_dll)
@@ -82,7 +78,12 @@ def main() -> None:
         app.resident_var.set(False)
         app.scope_var.set("selected")
         app._scope_changed()
-        app.image = Image.new("RGB", (1280, 800), "#5d9a8b")
+        theme_path = os.environ.get("WINDOWTINT_SMOKE_THEME")
+        if theme_path:
+            with Image.open(theme_path) as opened:
+                app.image = opened.convert("RGB").copy()
+        else:
+            app.image = Image.new("RGB", (1280, 800), "#5d9a8b")
         app.palette = extract_palette(app.image)
 
         for expected in browser_windows:

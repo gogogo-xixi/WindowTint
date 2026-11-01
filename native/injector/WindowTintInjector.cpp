@@ -7,6 +7,7 @@
 #include <gdiplus.h>
 #include <process.h>
 
+#include <algorithm>
 #include <cwchar>
 #include <memory>
 #include <mutex>
@@ -20,19 +21,22 @@
 
 extern "C" __declspec(dllexport) BOOL WINAPI Apply(HWND hwnd, LPCWSTR path);
 extern "C" __declspec(dllexport) BOOL WINAPI Remove(HWND hwnd);
+extern "C" __declspec(dllexport) BOOL WINAPI ApplyPainted(HWND hwnd, LPCWSTR path);
+extern "C" __declspec(dllexport) DWORD WINAPI ApplyPaintedRemote(LPVOID parameter);
 
 namespace {
 
 constexpr size_t kMaxLongPath = 32768;
 constexpr UINT kApplyOverlayMessage = WM_APP + 0x52;
 constexpr UINT kRemoveMessage = WM_APP + 0x53;
+constexpr UINT kApplyPaintMessage = WM_APP + 0x54;
 constexpr UINT_PTR kOverlayTimerId = 0x57544F4C;
 constexpr UINT kOverlayTimerInterval = 100;
 constexpr UINT_PTR kResizeSettleTimerId = 0x57545253;
 constexpr UINT kResizeSettleDelay = 120;
 constexpr wchar_t kOverlayClassPrefix[] = L"WindowTintOverlay";
-constexpr wchar_t kOverlayClassName[] = L"WindowTintOverlay_0_4_11";
-constexpr wchar_t kStatePropertyName[] = L"WindowTintState_0_4_11";
+constexpr wchar_t kOverlayClassName[] = L"WindowTintOverlay_0_4_15";
+constexpr wchar_t kStatePropertyName[] = L"WindowTintState_0_4_15";
 constexpr DWORD kDwmExtendedFrameBounds = 9;
 
 LRESULT CALLBACK OverlayWindowProc(
@@ -57,6 +61,8 @@ struct OverlayState {
     bool image_dirty = true;
     bool resize_pending = false;
     bool interactive_resize = false;
+    bool interactive_move = false;
+    bool painted = false;
     int x = 0;
     int y = 0;
     int width = 0;
@@ -72,6 +78,10 @@ bool ShowOverlay(
     HWND target,
     const std::shared_ptr<OverlayState>& state,
     bool force_upload);
+bool DrawPaintedBackdrop(
+    HWND target,
+    const std::shared_ptr<OverlayState>& state,
+    HDC hdc);
 
 std::mutex g_state_mutex;
 std::unordered_map<HWND, std::shared_ptr<OverlayState>> g_states;
@@ -143,6 +153,99 @@ bool EnsureGdiplus() {
         Gdiplus::GdiplusStartup(&g_gdiplus_token, &input, nullptr);
     g_gdiplus_ready = status == Gdiplus::Ok;
     return g_gdiplus_ready;
+}
+
+Gdiplus::Rect CoverSourceRect(
+    int image_width,
+    int image_height,
+    int destination_width,
+    int destination_height) {
+    if (image_width <= 0 || image_height <= 0 ||
+        destination_width <= 0 || destination_height <= 0) {
+        return Gdiplus::Rect(0, 0, 1, 1);
+    }
+    const double image_aspect =
+        static_cast<double>(image_width) / image_height;
+    const double destination_aspect =
+        static_cast<double>(destination_width) / destination_height;
+    if (image_aspect > destination_aspect) {
+        const int crop_width = std::clamp(
+            static_cast<int>(
+                static_cast<double>(image_height) * destination_aspect + 0.5),
+            1,
+            image_width);
+        return Gdiplus::Rect(
+            (image_width - crop_width) / 2,
+            0,
+            crop_width,
+            image_height);
+    }
+    const int crop_height = std::clamp(
+        static_cast<int>(
+            static_cast<double>(image_width) / destination_aspect + 0.5),
+        1,
+        image_height);
+    return Gdiplus::Rect(
+        0,
+        (image_height - crop_height) / 2,
+        image_width,
+        crop_height);
+}
+
+bool DrawPaintedBackdrop(
+    HWND target,
+    const std::shared_ptr<OverlayState>& state,
+    HDC hdc) {
+    if (!state || !target || !hdc || !IsWindow(target)) {
+        return false;
+    }
+    RECT client{};
+    if (!GetClientRect(target, &client)) {
+        return false;
+    }
+    const int width = client.right - client.left;
+    const int height = client.bottom - client.top;
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+    if (!EnsureGdiplus()) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(state->image_mutex);
+    if (state->image_dirty || !state->image) {
+        state->image.reset(
+            Gdiplus::Image::FromFile(state->path.c_str(), FALSE));
+        if (!state->image ||
+            state->image->GetLastStatus() != Gdiplus::Ok ||
+            state->image->GetWidth() == 0 ||
+            state->image->GetHeight() == 0) {
+            state->image.reset();
+            return false;
+        }
+        state->image_dirty = false;
+    }
+
+    Gdiplus::Graphics graphics(hdc);
+    graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+    graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+    graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+
+    const Gdiplus::Rect source_rect = CoverSourceRect(
+        static_cast<int>(state->image->GetWidth()),
+        static_cast<int>(state->image->GetHeight()),
+        width,
+        height);
+    const Gdiplus::Status status = graphics.DrawImage(
+        state->image.get(),
+        Gdiplus::Rect(0, 0, width, height),
+        source_rect.X,
+        source_rect.Y,
+        source_rect.Width,
+        source_rect.Height,
+        Gdiplus::UnitPixel);
+    return status == Gdiplus::Ok;
 }
 
 std::shared_ptr<OverlayState> FindState(HWND hwnd) {
@@ -276,13 +379,18 @@ bool UploadOverlayImage(HWND overlay, Gdiplus::Image* image) {
             graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
             graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
             graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+            const Gdiplus::Rect source_rect = CoverSourceRect(
+                static_cast<int>(image->GetWidth()),
+                static_cast<int>(image->GetHeight()),
+                width,
+                height);
             draw_status = graphics.DrawImage(
                 image,
                 Gdiplus::Rect(0, 0, width, height),
-                0,
-                0,
-                static_cast<INT>(image->GetWidth()),
-                static_cast<INT>(image->GetHeight()),
+                source_rect.X,
+                source_rect.Y,
+                source_rect.Width,
+                source_rect.Height,
                 Gdiplus::UnitPixel);
             graphics.Flush(Gdiplus::FlushIntentionSync);
         }
@@ -578,11 +686,13 @@ bool RemoveOverlayOnUiThread(
     RetireState(target, state);
     KillTimer(target, kOverlayTimerId);
     KillTimer(target, kResizeSettleTimerId);
-    if (state->overlay && IsWindow(state->overlay)) {
-        DestroyWindow(state->overlay);
-        state->overlay = nullptr;
+    if (!state->painted) {
+        if (state->overlay && IsWindow(state->overlay)) {
+            DestroyWindow(state->overlay);
+            state->overlay = nullptr;
+        }
+        DestroyStrayOverlays(target, nullptr);
     }
-    DestroyStrayOverlays(target, nullptr);
     if (state->original_proc && IsWindow(target)) {
         SetWindowLongPtrW(
             target,
@@ -591,7 +701,7 @@ bool RemoveOverlayOnUiThread(
         state->original_proc = nullptr;
     }
     if (IsWindow(target)) {
-        InvalidateRect(target, nullptr, FALSE);
+        InvalidateRect(target, nullptr, TRUE);
     }
     DetachBinding(target);
     return true;
@@ -647,16 +757,38 @@ LRESULT CALLBACK WindowHookProc(
             return ShowOverlay(hwnd, state, true) ? TRUE : FALSE;
         case kRemoveMessage:
             return RemoveOverlayOnUiThread(hwnd, state) ? TRUE : FALSE;
+        case kApplyPaintMessage:
+            if (!EnsureGdiplus()) {
+                return FALSE;
+            }
+            InvalidateRect(hwnd, nullptr, TRUE);
+            return TRUE;
+        case WM_ERASEBKGND:
+            if (state->painted) {
+                if (!w_param) {
+                    return TRUE;
+                }
+                if (DrawPaintedBackdrop(
+                        hwnd,
+                        state,
+                        reinterpret_cast<HDC>(w_param))) {
+                    return TRUE;
+                }
+            }
+            break;
         case WM_DPICHANGED: {
             const LRESULT result =
                 CallWindowProcW(original_proc, hwnd, message, w_param, l_param);
-            if (!state->resize_pending) {
+            if (state->painted) {
+                InvalidateRect(hwnd, nullptr, TRUE);
+            } else if (!state->resize_pending) {
                 ShowOverlay(hwnd, state, false);
             }
             return result;
         }
         case WM_ENTERSIZEMOVE:
             state->interactive_resize = true;
+            state->interactive_move = false;
             break;
         case WM_EXITSIZEMOVE: {
             const LRESULT result =
@@ -665,15 +797,19 @@ LRESULT CALLBACK WindowHookProc(
                 FinishResizeSettle(hwnd, state);
             } else {
                 state->interactive_resize = false;
+                state->interactive_move = false;
+                ShowOverlay(hwnd, state, true);
             }
             return result;
         }
         case WM_SHOWWINDOW:
             if (w_param) {
-                if (!state->resize_pending) {
+                if (state->painted) {
+                    InvalidateRect(hwnd, nullptr, TRUE);
+                } else if (!state->resize_pending) {
                     ShowOverlay(hwnd, state, false);
                 }
-            } else {
+            } else if (!state->painted) {
                 HideOverlay(state);
             }
             break;
@@ -684,12 +820,44 @@ LRESULT CALLBACK WindowHookProc(
                 window_pos && !(window_pos->flags & SWP_NOSIZE);
             const LRESULT result =
                 CallWindowProcW(original_proc, hwnd, message, w_param, l_param);
-            if (size_changed) {
+            if (state->painted) {
+                InvalidateRect(hwnd, nullptr, TRUE);
+            } else if (size_changed) {
                 ScheduleResizeSettle(hwnd, state);
             } else if (!state->resize_pending) {
                 ShowOverlay(hwnd, state, false);
             }
             return result;
+        }
+        case WM_MOVING: {
+            state->interactive_move = true;
+            if (!state->resize_pending &&
+                state->overlay &&
+                IsWindow(state->overlay) &&
+                IsWindowVisible(state->overlay) &&
+                l_param) {
+                RECT current{};
+                const RECT* proposed =
+                    reinterpret_cast<const RECT*>(l_param);
+                if (GetWindowRect(hwnd, &current)) {
+                    const int delta_x = proposed->left - current.left;
+                    const int delta_y = proposed->top - current.top;
+                    if (delta_x != 0 || delta_y != 0) {
+                        SetWindowPos(
+                            state->overlay,
+                            nullptr,
+                            state->x + delta_x,
+                            state->y + delta_y,
+                            0,
+                            0,
+                            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                                SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+                        state->x += delta_x;
+                        state->y += delta_y;
+                    }
+                }
+            }
+            break;
         }
         case WM_MOVE: {
             const LRESULT result =
@@ -700,9 +868,16 @@ LRESULT CALLBACK WindowHookProc(
             return result;
         }
         case WM_SIZE:
+            if (state->painted) {
+                const LRESULT result =
+                    CallWindowProcW(original_proc, hwnd, message, w_param, l_param);
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return result;
+            }
             if (w_param == SIZE_MINIMIZED) {
                 state->resize_pending = true;
                 state->interactive_resize = false;
+                state->interactive_move = false;
                 KillTimer(hwnd, kOverlayTimerId);
                 KillTimer(hwnd, kResizeSettleTimerId);
                 HideOverlay(state);
@@ -914,6 +1089,88 @@ extern "C" __declspec(dllexport) BOOL WINAPI Apply(HWND hwnd, LPCWSTR path) {
     return posted;
 }
 
+extern "C" __declspec(dllexport) BOOL WINAPI ApplyPainted(
+    HWND hwnd,
+    LPCWSTR path) {
+    MarkStage(1);
+    if (!IsWindow(hwnd) || path == nullptr || path[0] == L'\0') {
+        return FALSE;
+    }
+
+    std::shared_ptr<OverlayState> state;
+    bool install_proc = false;
+    {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        const auto found = g_states.find(hwnd);
+        if (found != g_states.end()) {
+            state = found->second;
+        } else {
+            state = std::make_shared<OverlayState>();
+            state->target = hwnd;
+            install_proc = true;
+        }
+    }
+
+    state->painted = true;
+    {
+        std::lock_guard<std::mutex> lock(state->image_mutex);
+        state->path = path;
+        state->image_dirty = true;
+    }
+
+    if (install_proc) {
+        for (int attempt = 0; attempt < 16; ++attempt) {
+            DWORD_PTR result = 0;
+            const LRESULT sent = SendMessageTimeoutW(
+                hwnd,
+                kRemoveMessage,
+                0,
+                0,
+                SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                1000,
+                &result);
+            if (!sent) {
+                break;
+            }
+        }
+
+        const WNDPROC original_proc = reinterpret_cast<WNDPROC>(
+            GetWindowLongPtrW(hwnd, GWLP_WNDPROC));
+        if (!original_proc) {
+            return FALSE;
+        }
+        state->original_proc = original_proc;
+        if (!AttachBinding(hwnd, state)) {
+            state->original_proc = nullptr;
+            return FALSE;
+        }
+        SetLastError(ERROR_SUCCESS);
+        const WNDPROC replaced_proc = reinterpret_cast<WNDPROC>(
+            SetWindowLongPtrW(
+                hwnd,
+                GWLP_WNDPROC,
+                reinterpret_cast<LONG_PTR>(WindowHookProc)));
+        if (!replaced_proc) {
+            DetachBinding(hwnd);
+            state->original_proc = nullptr;
+            return FALSE;
+        }
+        state->original_proc = replaced_proc;
+        MarkStage(2);
+        {
+            std::lock_guard<std::mutex> lock(g_state_mutex);
+            g_states.emplace(hwnd, state);
+        }
+    }
+
+    const BOOL posted =
+        PostMessage(hwnd, kApplyPaintMessage, 0, 0) ? TRUE : FALSE;
+    if (posted) {
+        MarkStage(3);
+    }
+    return posted;
+}
+
 extern "C" __declspec(dllexport) BOOL WINAPI Remove(HWND hwnd) {
     if (!IsWindow(hwnd)) {
         return TRUE;
@@ -936,6 +1193,28 @@ extern "C" __declspec(dllexport) DWORD WINAPI ApplyRemote(LPVOID parameter) {
         return FALSE;
     }
     return ApplyWithOwner(request->hwnd, path.c_str(), request->owner_pid) ? TRUE : FALSE;
+}
+
+extern "C" __declspec(dllexport) DWORD WINAPI ApplyPaintedRemote(
+    LPVOID parameter) {
+    struct Request {
+        HWND hwnd;
+        WCHAR path[kMaxLongPath];
+        DWORD owner_pid;
+    };
+    if (parameter == nullptr) {
+        return FALSE;
+    }
+    const auto* request = static_cast<const Request*>(parameter);
+    const std::wstring path(request->path, request->path + kMaxLongPath);
+    if (path.empty() || path[0] == L'\0') {
+        return FALSE;
+    }
+    if (!ApplyPainted(request->hwnd, path.c_str())) {
+        return FALSE;
+    }
+    EnsureOwnerWatcher(request->owner_pid);
+    return TRUE;
 }
 
 extern "C" __declspec(dllexport) DWORD WINAPI RemoveRemote(LPVOID parameter) {

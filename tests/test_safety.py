@@ -10,6 +10,7 @@ from windowtint.safety import (
     is_blocked_process,
     is_explorer_file_window,
     is_supported_window_style,
+    supports_painted_backdrop,
     target_rejection_reason,
 )
 
@@ -44,6 +45,11 @@ class ProcessSafetyTests(unittest.TestCase):
         self.assertFalse(
             is_explorer_file_window("notepad.exe", "CabinetWClass")
         )
+
+    def test_standard_win32_surfaces_are_marked_for_painted_backdrop(self):
+        self.assertTrue(supports_painted_backdrop("rundll32.exe", "#32770"))
+        self.assertTrue(supports_painted_backdrop("notepad.exe", "Notepad"))
+        self.assertFalse(supports_painted_backdrop("Codex++.exe", "Tauri Window"))
 
     def test_eligibility_reports_the_first_safety_reason(self):
         self.assertEqual(

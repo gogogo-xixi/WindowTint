@@ -6,7 +6,12 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from windowtint.overlay import OverlayManager, _Overlay
+from windowtint.overlay import (
+    EVENT_SYSTEM_MOVESIZEEND,
+    EVENT_SYSTEM_MOVESIZESTART,
+    OverlayManager,
+    _Overlay,
+)
 from windowtint.session import WindowTarget
 
 
@@ -47,6 +52,7 @@ class OverlayMoveTests(unittest.TestCase):
     def make_manager(self, bounds):
         manager = OverlayManager.__new__(OverlayManager)
         manager.user32 = FakeUser32()
+        manager._moving_targets = set()
         manager._overlays = {
             101: _Overlay(
                 hwnd=201,
@@ -95,6 +101,37 @@ class OverlayMoveTests(unittest.TestCase):
         manager._handle_location_event(101, 3)
         manager._handle_location_event(999, 0)
 
+        manager.sync_target.assert_called_once_with(101)
+
+    def test_move_events_keep_tracking_the_matching_overlay(self):
+        manager = self.make_manager((17, 23, 800, 600))
+        manager._hide = mock.Mock()
+        manager.sync_target = mock.Mock()
+
+        manager._win_event_callback(
+            None,
+            EVENT_SYSTEM_MOVESIZESTART,
+            101,
+            0,
+            0,
+            0,
+            0,
+        )
+
+        self.assertIn(101, manager._moving_targets)
+        manager._hide.assert_not_called()
+
+        manager._win_event_callback(
+            None,
+            EVENT_SYSTEM_MOVESIZEEND,
+            101,
+            0,
+            0,
+            0,
+            0,
+        )
+
+        self.assertNotIn(101, manager._moving_targets)
         manager.sync_target.assert_called_once_with(101)
 
 

@@ -1,9 +1,13 @@
+import os
 import tkinter as tk
 
 
 root = tk.Tk()
 root.title("WindowTint Test Target")
-root.geometry("720x420+260+180")
+root.attributes("-toolwindow", True)
+width = int(os.environ.get("WINDOWTINT_TEST_WIDTH", "720"))
+height = int(os.environ.get("WINDOWTINT_TEST_HEIGHT", "420"))
+root.geometry(f"{width}x{height}+260+180")
 root.configure(background="#f5f7f6")
 tk.Label(
     root,

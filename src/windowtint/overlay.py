@@ -5,8 +5,9 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageOps
+from PIL import Image, ImageChops
 
+from .artwork import cover_image
 from .session import WindowTarget
 
 
@@ -43,6 +44,8 @@ DWMWA_EXTENDED_FRAME_BOUNDS = 9
 DWMWA_CLOAKED = 14
 
 EVENT_OBJECT_LOCATIONCHANGE = 0x800B
+EVENT_SYSTEM_MOVESIZESTART = 0x000A
+EVENT_SYSTEM_MOVESIZEEND = 0x000B
 WINEVENT_OUTOFCONTEXT = 0x0000
 WINEVENT_SKIPOWNPROCESS = 0x0002
 OBJID_WINDOW = 0
@@ -276,6 +279,8 @@ class OverlayManager:
         self._wndproc = _WNDPROC(self._window_proc)
         self._win_event_proc = _WINEVENTPROC(self._win_event_callback)
         self._location_hook = None
+        self._move_hook = None
+        self._moving_targets: set[int] = set()
         self._event_sync_active = False
         self._last_event_error: Exception | None = None
         self._class_atom = self._register_class()
@@ -365,6 +370,7 @@ class OverlayManager:
         overlay = self._overlays.pop(target.hwnd, None)
         if overlay is None:
             return
+        self._moving_targets.discard(target.hwnd)
         if self.user32.IsWindow(overlay.hwnd):
             self.user32.DestroyWindow(overlay.hwnd)
         if not self._overlays:
@@ -450,35 +456,58 @@ class OverlayManager:
         _thread: int,
         _time: int,
     ) -> None:
+        target_hwnd = int(hwnd or 0)
+        if event == EVENT_SYSTEM_MOVESIZESTART:
+            if target_hwnd in self._overlays:
+                self._moving_targets.add(target_hwnd)
+            return
+        if event == EVENT_SYSTEM_MOVESIZEEND:
+            if target_hwnd in self._moving_targets:
+                self._moving_targets.discard(target_hwnd)
+                self.sync_target(target_hwnd)
+            return
         if event != EVENT_OBJECT_LOCATIONCHANGE or self._event_sync_active:
             return
         self._event_sync_active = True
         try:
-            self._handle_location_event(int(hwnd or 0), int(id_object))
+            self._handle_location_event(target_hwnd, int(id_object))
         except Exception as error:
             self._last_event_error = error
         finally:
             self._event_sync_active = False
 
     def _install_location_hook(self) -> None:
-        if self._location_hook:
-            return
-        hook = self.user32.SetWinEventHook(
-            EVENT_OBJECT_LOCATIONCHANGE,
-            EVENT_OBJECT_LOCATIONCHANGE,
-            None,
-            self._win_event_proc,
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
-        )
-        self._location_hook = hook or None
+        if not self._location_hook:
+            hook = self.user32.SetWinEventHook(
+                EVENT_OBJECT_LOCATIONCHANGE,
+                EVENT_OBJECT_LOCATIONCHANGE,
+                None,
+                self._win_event_proc,
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            )
+            self._location_hook = hook or None
+        if not self._move_hook:
+            hook = self.user32.SetWinEventHook(
+                EVENT_SYSTEM_MOVESIZESTART,
+                EVENT_SYSTEM_MOVESIZEEND,
+                None,
+                self._win_event_proc,
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            )
+            self._move_hook = hook or None
 
     def _uninstall_location_hook(self) -> None:
-        if not self._location_hook:
-            return
-        self.user32.UnhookWinEvent(self._location_hook)
-        self._location_hook = None
+        if self._location_hook:
+            self.user32.UnhookWinEvent(self._location_hook)
+            self._location_hook = None
+        if self._move_hook:
+            self.user32.UnhookWinEvent(self._move_hook)
+            self._move_hook = None
+        self._moving_targets.clear()
 
     def _hide(self, overlay: _Overlay) -> None:
         if overlay.visible:
@@ -586,10 +615,9 @@ class OverlayManager:
 
     def _paint(self, overlay: _Overlay) -> None:
         x, y, width, height = overlay.bounds
-        image = ImageOps.fit(
+        image = cover_image(
             overlay.image,
             (width, height),
-            method=Image.Resampling.LANCZOS,
         )
         red, green, blue, alpha = image.split()
         premultiplied = Image.merge(

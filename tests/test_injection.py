@@ -10,6 +10,7 @@ from windowtint.injection import (
     INJECTOR_RELEASE_NAME,
     InjectionError,
     InjectionManager,
+    RemoteProcessBridge,
 )
 from windowtint.session import WindowTarget
 
@@ -28,20 +29,58 @@ class FakeBridge:
         self.applies.append((pid, module_base, hwnd, backdrop_path))
         return 1
 
+    def call_apply_painted(self, pid, module_base, hwnd, backdrop_path):
+        self.applies.append(("painted", pid, module_base, hwnd, backdrop_path))
+        return 1
+
     def call_remove(self, pid, module_base, hwnd):
         self.removes.append((pid, module_base, hwnd))
 
 
 class InjectionManagerTests(unittest.TestCase):
+    def test_different_injector_version_loaded_in_target_is_rejected_before_injection(self):
+        class LegacyModuleBridge(RemoteProcessBridge):
+            def __init__(self):
+                super().__init__()
+                self.remote_calls = 0
+
+            def _remote_module_entries(self, pid):
+                return [
+                    (
+                        "WindowTintInjector-0.4.12.dll",
+                        r"C:\old\WindowTintInjector-0.4.12.dll",
+                        0x12340000,
+                    )
+                ]
+
+            def _call_remote(self, *args, **kwargs):
+                self.remote_calls += 1
+                raise AssertionError("injection must not start")
+
+        bridge = LegacyModuleBridge()
+
+        with self.assertRaisesRegex(
+            InjectionError,
+            r"WindowTintInjector-0\.4\.12\.dll.*重启",
+        ):
+            bridge.ensure_module(
+                202,
+                Path(r"C:\new\WindowTintInjector-0.4.15.dll"),
+            )
+
+        self.assertEqual(bridge.remote_calls, 0)
+
     def test_release_injector_version_is_consistent_across_build_and_docs(self):
         version = INJECTOR_RELEASE_NAME.removeprefix("WindowTintInjector-").removesuffix(".dll")
         root = Path(__file__).resolve().parents[1]
         files = {
             "build.ps1": root / "build.ps1",
+            "app.manifest": root / "app.manifest",
             "manifest": root / "native" / "injector" / "WindowTintInjector.manifest",
             "README.md": root / "README.md",
             "COMPLIANCE.md": root / "COMPLIANCE.md",
             "design.md": root / "docs" / "design.md",
+            "CHANGELOG.md": root / "CHANGELOG.md",
         }
 
         for label, path in files.items():
@@ -70,6 +109,18 @@ class InjectionManagerTests(unittest.TestCase):
 
         self.assertIn(f'L"WindowTintOverlay_{class_suffix}"', source)
         self.assertIn('L"WindowTintOverlay"', source)
+
+    def test_native_injector_cover_crops_the_theme_instead_of_stretching_it(self):
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "native"
+            / "injector"
+            / "WindowTintInjector.cpp"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("CoverSourceRect(", source)
+        self.assertIn("source_rect.X", source)
+        self.assertIn("source_rect.Width", source)
 
     def test_window_hook_uses_window_bound_state_without_locking_the_global_map(self):
         source = (
@@ -103,6 +154,24 @@ class InjectionManagerTests(unittest.TestCase):
         self.assertEqual(
             bridge.applies,
             [(202, 0x50000000, 101, image), (202, 0x50000000, 303, image)],
+        )
+
+    def test_painted_targets_use_the_painted_injector_export(self):
+        bridge = FakeBridge()
+        with tempfile.TemporaryDirectory() as directory:
+            dll = Path(directory) / "injector.dll"
+            image = Path(directory) / "backdrop.png"
+            dll.write_bytes(b"dll")
+            image.write_bytes(b"png")
+            manager = InjectionManager(dll, bridge=bridge)
+            target = WindowTarget(101, 202, "painted")
+
+            manager.apply_painted(target, image)
+
+        self.assertEqual(bridge.loads, [(202, dll)])
+        self.assertEqual(
+            bridge.applies,
+            [("painted", 202, 0x50000000, 101, image)],
         )
 
     def test_remove_only_calls_the_remote_remove_export_for_known_windows(self):

@@ -14,10 +14,10 @@ from PIL import Image, ImageChops, ImageGrab
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from windowtint.artwork import build_glass_backdrop
+from windowtint.artwork import render_glass_backdrop
 from windowtint.backdrop_store import BackdropStore
 from windowtint.injection import InjectionManager, default_injector_dll
-from windowtint.native import apply_window_theme, list_windows, restore_window_theme
+from windowtint.native import WindowInfo, apply_window_theme, restore_window_theme
 from windowtint.session import ThemeSession, WindowTarget
 from windowtint.theme import extract_palette
 
@@ -59,7 +59,7 @@ def move_window(hwnd: int, dx: int, dy: int) -> None:
         raise RuntimeError("SetWindowPos failed")
 
 
-def bring_to_front(hwnd: int) -> None:
+def bring_to_front(hwnd: int, *, topmost: bool = False) -> None:
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     user32.SetWindowPos.argtypes = (
         wintypes.HWND,
@@ -73,7 +73,7 @@ def bring_to_front(hwnd: int) -> None:
     user32.SetWindowPos.restype = wintypes.BOOL
     if not user32.SetWindowPos(
         hwnd,
-        wintypes.HWND(0),
+        wintypes.HWND(-1 if topmost else 0),
         0,
         0,
         0,
@@ -152,12 +152,41 @@ def probe_stage(view: int) -> int:
 def find_target(expected_pid: int) -> object:
     deadline = time.time() + 8
     while time.time() < deadline:
-        for window in list_windows():
-            if (
-                window.pid == expected_pid
-                and window.title == "WindowTint Test Target"
-            ):
-                return window
+        user32 = ctypes.windll.user32
+        matches: list[int] = []
+        callback_type = ctypes.WINFUNCTYPE(
+            wintypes.BOOL,
+            wintypes.HWND,
+            wintypes.LPARAM,
+        )
+
+        def visit(hwnd: int, _lparam: int) -> bool:
+            process_id = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+            if process_id.value != expected_pid:
+                return True
+            title_length = user32.GetWindowTextLengthW(hwnd)
+            title = ctypes.create_unicode_buffer(title_length + 1)
+            user32.GetWindowTextW(hwnd, title, len(title))
+            if title.value == "WindowTint Test Target":
+                matches.append(hwnd)
+                return False
+            return True
+
+        callback = callback_type(visit)
+        user32.EnumWindows(callback, 0)
+        if matches:
+            hwnd = matches[0]
+            thread_id = user32.GetWindowThreadProcessId(hwnd, None)
+            return WindowInfo(
+                hwnd=hwnd,
+                title="WindowTint Test Target",
+                pid=expected_pid,
+                process_name="python.exe",
+                thread_id=thread_id,
+                style=int(user32.GetWindowLongPtrW(hwnd, -16)),
+                is_64_bit=True,
+            )
         time.sleep(0.2)
     raise RuntimeError("manual target window was not found")
 
@@ -191,7 +220,7 @@ def main() -> None:
         window = find_target(process.pid)
         target = WindowTarget(window.hwnd, window.pid)
         bounds = window_rect(window.hwnd)
-        bring_to_front(window.hwnd)
+        bring_to_front(window.hwnd, topmost=True)
         time.sleep(0.8)
         before = ImageGrab.grab(bbox=bounds)
 
@@ -206,7 +235,16 @@ def main() -> None:
         palette = extract_palette(source)
         opacity = float(os.environ.get("WINDOWTINT_SMOKE_OPACITY", "0.42"))
         blur_radius = int(os.environ.get("WINDOWTINT_SMOKE_BLUR", "2"))
-        backdrop = build_glass_backdrop(source, opacity=opacity, blur_radius=blur_radius)
+        content_focus = os.environ.get("WINDOWTINT_SMOKE_CONTENT_FOCUS", "0") == "1"
+        target_width = bounds[2] - bounds[0]
+        target_height = bounds[3] - bounds[1]
+        backdrop = render_glass_backdrop(
+            source,
+            (target_width, target_height),
+            opacity=opacity,
+            blur_radius=blur_radius,
+            content_focus=content_focus,
+        )
         path = BackdropStore(ROOT / "build" / "smoke-runtime").write(backdrop)
 
         injector = InjectionManager(default_injector_dll())

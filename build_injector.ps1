@@ -36,7 +36,12 @@ if (Test-Path -LiteralPath $vswhere) {
         $vcvarsCandidates += Join-Path $installation "VC\Auxiliary\Build\vcvars64.bat"
     }
 }
-$vcvars = $vcvarsCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+$vcvars = $vcvarsCandidates |
+    Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_) -and
+        (Test-Path -LiteralPath $_)
+    } |
+    Select-Object -First 1
 if (-not $vcvars) {
     throw "Visual Studio x64 build tools were not found. Set WINDOWTINT_VCVARS64 to vcvars64.bat."
 }

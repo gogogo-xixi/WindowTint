@@ -25,8 +25,8 @@ def sample_image() -> Image.Image:
 
 def main() -> None:
     app = WindowTintApp()
-    if app.scope_var.get() != "selected":
-        raise RuntimeError("WindowTint must open in current-window mode by default")
+    if app.scope_var.get() != "all":
+        raise RuntimeError("WindowTint must open in all-eligible-windows mode by default")
     app.geometry("1120x760+20+20")
     app.attributes("-topmost", True)
     app.resident_var.set(False)
@@ -40,7 +40,7 @@ def main() -> None:
 
     def capture() -> None:
         app.target_var.set("示例窗口 · 本地应用")
-        app.target_combo.configure(values=("示例窗口 · 本地应用",))
+        app.target_combo.set_values(("示例窗口 · 本地应用",))
         app.status_label.configure(text="示例窗口 · 仅作界面示意")
         app.update()
         app.after(150, save_capture)
@@ -55,7 +55,8 @@ def main() -> None:
         basic_output = ROOT / "build" / "windowtint-ui.png"
         result.save(basic_output)
 
-        app.notebook.select(1)
+        app.page_var.set("advanced")
+        app._switch_page("advanced")
         app.update_idletasks()
         advanced_result = ImageGrab.grab(bbox=(x, y, x + width, y + height))
         advanced_output = ROOT / "build" / "windowtint-advanced.png"

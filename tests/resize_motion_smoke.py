@@ -121,7 +121,7 @@ def main() -> None:
     try:
         window = find_target(process.pid)
         target = WindowTarget(window.hwnd, window.pid)
-        bring_to_front(target.hwnd)
+        bring_to_front(target.hwnd, topmost=True)
         time.sleep(0.4)
         left, top, _right, _bottom = window_rect(target.hwnd)
 
